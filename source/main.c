@@ -12,26 +12,23 @@
 
 #include "main.h"
 #include "init/USART_Init.h"
-#include "IO/io_setup.h"
-#include "common/common.h"
+#include "init/restore.h"
 #include "init/set_interrupt.h"
 #include "library/7_SEG_Led.h"
 #include "library/learn.h"
-#include "init/restore.h"
+#include "IO/io_setup.h"
 #include "library/measure.h"
+#include "common/common.h"
+
+
 
 #define HWCLOCK_RESETCNT    280
 #define TICKSPERSEC        (F_CPU/1000/HWCLOCK_RESETCNT)
 
-//DEBUG
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-//DEBUG
-
 #ifdef DEBUG
-FILE uart_str = FDEV_SETUP_STREAM(uart_putch, uart_getch, _FDEV_SETUP_RW);
+   FILE uart_str = FDEV_SETUP_STREAM(uart_putch, uart_getch, _FDEV_SETUP_RW);
 #endif
+
 
 /********************************************************************
 *   Timer 2 interrupt routine, 1ms ticks
@@ -39,10 +36,11 @@ FILE uart_str = FDEV_SETUP_STREAM(uart_putch, uart_getch, _FDEV_SETUP_RW);
 ********************************************************************/
 ISR(TIMER2_OVF_vect){
 
-	/*
+	 int_clock++;
+	 /*
 	 * Set timer counter initial value
 	 */
-    TCNT2 = 0xFF - HWCLOCK_RESETCNT + 1;
+    TCNT2 = 0xFB;// - HWCLOCK_RESETCNT + 1;
 
 	/*
 	 * 16bit incremental counter, every 1ms
@@ -50,6 +48,7 @@ ISR(TIMER2_OVF_vect){
     if ( ++hwclock > TICKSPERSEC){
         hwclock = 0;
         int_clock++;
+
     }
 }
 
@@ -63,25 +62,27 @@ ISR (INT0_vect)
 	   }
 
 }
+
 ISR (INT1_vect)
 {
-	if(!measure_flag_IPG){
+	if(measure_flag_IPG){
 		temp_freq_start_IPG = int_clock;
-		measure_flag_IPG = 1;
+		measure_flag_IPG = 0;
 	}else{
 		temp_freq_end_IPG = int_clock;
-		measure_flag_IPG = 0;
+		measure_flag_IPG = 1;
+		IPG_time=(temp_freq_end_IPG-temp_freq_start_IPG);
 	}
+
 }
 
 int main(void){
 
 //********************** Declaration of variables ******************************
-//	signed int measure;
-//	signed int a = -1;
 	int i=0;
 	uint16_t staus_poll  =0;
 	uint16_t temp_result =0;
+	int freq;
 
 //********************** Initialization of variables ******************************
 	hwclock = 0;
@@ -89,21 +90,17 @@ int main(void){
 	pulse_counter = 0;
 	measure_flag_IPG = 0;
 
-#ifdef DEBUG
-/*
- *  Initialize device
- */
-USART_Init();
-#endif
 /*
  * Initializing I/O Ports
  */
 io_init();
+USART_Init();
 
 /*
  * Initializing interrupt
  */
 set_timer2_interrupt();
+
 set_external_interrupt();
 
 /*
@@ -120,22 +117,15 @@ enable_VSS_interrupt();
 /*
  *Set IPG interrupt
  */
-disable_IPG_interrupt();
+enable_IPG_interrupt();
 
-
-#ifdef DEBUG
-/*
- * Set usart stream
- */
-stdout = stdin = &uart_str;
-printf("START\r\n");
-#endif
 
 //Learn device routine
 if(LEARN_SW)learn_device();
 
 //Restore settings from EEPROM
 restore();
+
 
 /*
  * Main Loop
@@ -145,12 +135,10 @@ restore();
 		/*
 		 * measure poll every 10 ms
 		 */
-		if ((int_clock - staus_poll) >= 10) {
+		if ((int_clock - staus_poll) >= 1) {
 
 			temp_result = read_puls_20();
-#ifdef DEBUG
-			printf("res > %d\r\n", temp_result);
-#endif
+
 			for (i=1; i <= gear_num; i++){
 
 				switch (i){
@@ -172,13 +160,31 @@ restore();
 					case 6 :
 						if((temp_result >= gear6[0]) && (temp_result <= gear6[1])) led_char(6);
 					break;
-					default :
+					default : led_char('-');
 					break;
 
 				};
 			}
 			staus_poll = int_clock;
 		}
+
+		/*
+		 * Check shift position
+		 */
+		freq = measure_freq();
+
+		if((freq <= shift_up_max)&&(freq != 0)){
+			PORTC |= (1 << PC4);
+		}else {
+			PORTC &= ~(1 << PC4);
+		}
+
+		if(freq >= shift_down_min){
+			PORTC |= (1 << PC5);
+		}else {
+			PORTC &= ~(1 << PC5);
+		}
+
 
 		/*
 		 *  Check for neutral position
